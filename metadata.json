@@ -1,7 +1,8 @@
 {
-  "name": "AI Virtual Try-On",
-  "description": "An application that uses AI to place a user-uploaded clothing item onto a virtual model, creating a new try-on image.",
-  "requestFramePermissions": [
-    "camera"
+  "name": "ai-virtual-try-on",
+  "description": "Virtual try-on and image editing studio powered by Gemini",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]
 }

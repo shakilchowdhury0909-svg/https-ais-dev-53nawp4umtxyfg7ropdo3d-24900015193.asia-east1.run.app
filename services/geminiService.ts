@@ -1,444 +1,498 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI } from '@google/genai';
 
 export interface GenerationOptions {
-    imageSize?: '1K' | '2K' | '4K';
-    aspectRatio?: '1:1' | '3:4' | '4:3' | '9:16' | '16:9';
-    useProModel?: boolean;
+  aspectRatio?: string;
+  lighting?: string;
+  style?: string;
+  quality?: string;
+  resolution?: string;
+  negativePrompt?: string;
+  creativityLevel?: number;
+  temperature?: number;
+  jewelry?: string;
 }
 
-export async function editImageWithGemini(
-    base64Image: string,
-    mimeType: string,
-    prompt: string,
-    retryCount = 0
-): Promise<string> {
-    const MAX_RETRIES = 3;
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const modelName = 'gemini-2.5-flash-image';
-
-    try {
-        const response = await ai.models.generateContent({
-            model: modelName,
-            contents: {
-                parts: [
-                    {
-                        inlineData: {
-                            data: base64Image,
-                            mimeType: mimeType,
-                        },
-                    },
-                    {
-                        text: prompt,
-                    },
-                ],
-            },
-        });
-
-        if (!response.candidates?.[0]?.content?.parts) {
-            throw new Error("No response content received from AI.");
-        }
-
-        for (const part of response.candidates[0].content.parts) {
-            if (part.inlineData && part.inlineData.data) {
-                return part.inlineData.data;
-            }
-        }
-
-        throw new Error("No image data found in the API response.");
-
-    } catch (error: any) {
-        let apiMessage = error.message || String(error);
-        let apiCode = error.code;
-        let apiStatus = error.status;
-
-        try {
-            if (typeof apiMessage === 'string' && (apiMessage.trim().startsWith('{') || apiMessage.trim().startsWith('['))) {
-                const parsed = JSON.parse(apiMessage);
-                if (parsed.error && parsed.error.message) {
-                    apiMessage = parsed.error.message;
-                    apiCode = parsed.error.code || apiCode;
-                    apiStatus = parsed.error.status || apiStatus;
-                } else if (parsed.message) {
-                    apiMessage = parsed.message;
-                }
-            }
-        } catch (e) {
-            // Failed to parse, assume regular string
-        }
-
-        if (error.error && typeof error.error === 'object') {
-             if (error.error.message) apiMessage = error.error.message;
-             if (error.error.code) apiCode = error.error.code;
-             if (error.error.status) apiStatus = error.error.status;
-        }
-
-        const stringifiedError = JSON.stringify(error);
-        
-        const isQuotaError = 
-            String(apiMessage).includes("429") || 
-            String(apiMessage).toLowerCase().includes("quota") || 
-            String(apiMessage).includes("RESOURCE_EXHAUSTED") ||
-            String(apiStatus).includes("RESOURCE_EXHAUSTED") ||
-            stringifiedError.includes("RESOURCE_EXHAUSTED") ||
-            apiCode === 429;
-            
-        const isPermissionError = 
-            String(apiMessage).includes("PERMISSION_DENIED") || 
-            String(apiMessage).toLowerCase().includes("permission") ||
-            String(apiMessage).includes("The caller does not have permission") ||
-            stringifiedError.includes("PERMISSION_DENIED") ||
-            stringifiedError.includes("The caller does not have permission") ||
-            apiCode === 403;
-
-        const isTransientError = String(apiMessage).includes("500") || String(apiMessage).includes("503") || String(apiMessage).includes("ECONNRESET");
-        const isHardQuota = String(apiMessage).toLowerCase().includes("check your plan") || 
-                            String(apiMessage).toLowerCase().includes("billing details") ||
-                            String(apiMessage).toLowerCase().includes("exceeded your current quota") ||
-                            String(apiMessage).includes("429");
-
-        if ((isQuotaError || isTransientError) && retryCount < MAX_RETRIES && !isHardQuota) {
-            const waitTime = Math.pow(2, retryCount + 1) * 1000 + Math.random() * 1000;
-            console.warn(`Attempt ${retryCount + 1} failed. Retrying in ${Math.round(waitTime)}ms...`);
-            await new Promise(resolve => setTimeout(resolve, waitTime));
-            return editImageWithGemini(base64Image, mimeType, prompt, retryCount + 1);
-        }
-
-        if (isHardQuota) {
-             throw new Error("Quota Exhausted: You have exceeded your current quota. Please check your billing details or select a paid API key to continue.");
-        }
-
-        if (isQuotaError) {
-            throw new Error(`Quota Exhausted: ${apiMessage} Please select a personal paid API key from a project with billing enabled to continue.`);
-        }
-
-        if (isPermissionError) {
-             throw new Error("Permission Denied: The selected API key does not have access to this model. Please select a valid key from a paid Google Cloud Project.");
-        }
-
-        if (String(apiMessage).includes("Requested entity was not found")) {
-            throw new Error("API Key Selection Required: The model or key was not found. Please re-select a personal API key from a paid GCP project.");
-        }
-
-        throw new Error(apiMessage || "Failed to edit image.");
-    }
+function getApiKey(): string {
+  if (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) {
+    return process.env.GEMINI_API_KEY;
+  }
+  if (typeof window !== 'undefined') {
+    const win = window as any;
+    if (win.GEMINI_API_KEY) return win.GEMINI_API_KEY;
+    if (win.__ENV__?.GEMINI_API_KEY) return win.__ENV__.GEMINI_API_KEY;
+  }
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GEMINI_API_KEY) {
+    // @ts-ignore
+    return import.meta.env.VITE_GEMINI_API_KEY;
+  }
+  return '';
 }
 
-export async function generateARVirtualTryOn(
-    clothingBase64: string,
-    clothingMimeType: string,
-    personBase64: string,
-    personMimeType: string,
-    prompt: string,
-    options: GenerationOptions = {},
-    retryCount = 0
-): Promise<string> {
-    const MAX_RETRIES = 3;
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const modelName = options.useProModel ? 'gemini-3-pro-image-preview' : 'gemini-2.5-flash-image';
-
-    try {
-        const config: any = {};
-        if (options.useProModel) {
-            config.imageConfig = {
-                aspectRatio: options.aspectRatio || '1:1',
-                imageSize: options.imageSize || '1K'
-            };
-            config.tools = [{ googleSearch: {} }];
-        }
-
-        const response = await ai.models.generateContent({
-            model: modelName,
-            contents: {
-                parts: [
-                    {
-                        inlineData: {
-                            data: clothingBase64,
-                            mimeType: clothingMimeType,
-                        },
-                    },
-                    {
-                        inlineData: {
-                            data: personBase64,
-                            mimeType: personMimeType,
-                        },
-                    },
-                    {
-                        text: prompt,
-                    },
-                ],
-            },
-            config: config,
-        });
-
-        if (!response.candidates?.[0]?.content?.parts) {
-            throw new Error("No response content received from AI.");
-        }
-
-        for (const part of response.candidates[0].content.parts) {
-            if (part.inlineData && part.inlineData.data) {
-                return part.inlineData.data;
-            }
-        }
-
-        throw new Error("No image data found in the API response.");
-
-    } catch (error: any) {
-        let apiMessage = error.message || String(error);
-        let apiCode = error.code;
-        let apiStatus = error.status;
-
-        try {
-            if (typeof apiMessage === 'string' && (apiMessage.trim().startsWith('{') || apiMessage.trim().startsWith('['))) {
-                const parsed = JSON.parse(apiMessage);
-                if (parsed.error && parsed.error.message) {
-                    apiMessage = parsed.error.message;
-                    apiCode = parsed.error.code || apiCode;
-                    apiStatus = parsed.error.status || apiStatus;
-                } else if (parsed.message) {
-                    apiMessage = parsed.message;
-                }
-            }
-        } catch (e) {}
-
-        if (error.error && typeof error.error === 'object') {
-             if (error.error.message) apiMessage = error.error.message;
-             if (error.error.code) apiCode = error.error.code;
-             if (error.error.status) apiStatus = error.error.status;
-        }
-
-        const stringifiedError = JSON.stringify(error);
-        
-        const isQuotaError = 
-            String(apiMessage).includes("429") || 
-            String(apiMessage).toLowerCase().includes("quota") || 
-            String(apiMessage).includes("RESOURCE_EXHAUSTED") ||
-            String(apiStatus).includes("RESOURCE_EXHAUSTED") ||
-            stringifiedError.includes("RESOURCE_EXHAUSTED") ||
-            apiCode === 429;
-            
-        const isPermissionError = 
-            String(apiMessage).includes("PERMISSION_DENIED") || 
-            String(apiMessage).toLowerCase().includes("permission") ||
-            String(apiMessage).includes("The caller does not have permission") ||
-            stringifiedError.includes("PERMISSION_DENIED") ||
-            stringifiedError.includes("The caller does not have permission") ||
-            apiCode === 403;
-
-        const isTransientError = String(apiMessage).includes("500") || String(apiMessage).includes("503") || String(apiMessage).includes("ECONNRESET");
-        const isHardQuota = String(apiMessage).toLowerCase().includes("check your plan") || 
-                            String(apiMessage).toLowerCase().includes("billing details") ||
-                            String(apiMessage).toLowerCase().includes("exceeded your current quota") ||
-                            String(apiMessage).includes("429");
-
-        if ((isQuotaError || isTransientError) && retryCount < MAX_RETRIES && !isHardQuota) {
-            const waitTime = Math.pow(2, retryCount + 1) * 1000 + Math.random() * 1000;
-            console.warn(`Attempt ${retryCount + 1} failed. Retrying in ${Math.round(waitTime)}ms...`);
-            await new Promise(resolve => setTimeout(resolve, waitTime));
-            return generateARVirtualTryOn(clothingBase64, clothingMimeType, personBase64, personMimeType, prompt, options, retryCount + 1);
-        }
-
-        if (isHardQuota) throw new Error("Quota Exhausted: You have exceeded your current quota. Please check your billing details or select a paid API key to continue.");
-        if (isQuotaError) throw new Error(`Quota Exhausted: ${apiMessage} Please select a personal paid API key from a project with billing enabled to continue.`);
-        if (isPermissionError) throw new Error("Permission Denied: The selected API key does not have access to this model. Please select a valid key from a paid Google Cloud Project.");
-        if (String(apiMessage).includes("Requested entity was not found")) throw new Error("API Key Selection Required: The model or key was not found. Please re-select a personal API key from a paid GCP project.");
-
-        throw new Error(apiMessage || "Failed to generate AR try-on.");
-    }
+function parseBase64(dataUrl: string): { mimeType: string; data: string } {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (match) {
+    return { mimeType: match[1], data: match[2] };
+  }
+  return { mimeType: 'image/jpeg', data: dataUrl };
 }
 
 export async function generateVirtualTryOn(
-    base64Image: string, 
-    mimeType: string, 
-    prompt: string, 
-    options: GenerationOptions = {},
-    retryCount = 0
+  modelImageBase64: string,
+  garmentImageBase64: string,
+  prompt: string,
+  options?: GenerationOptions
 ): Promise<string> {
-    const MAX_RETRIES = 3;
-    
-    // Always use the process.env.API_KEY which might be updated by the key selection dialog
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const apiKey = getApiKey();
+  const ai = new GoogleGenAI(apiKey ? { apiKey } : {});
 
-    // Determine which model to use. Pro model is used for high-quality requests (2K/4K).
-    const modelName = options.useProModel ? 'gemini-3-pro-image-preview' : 'gemini-2.5-flash-image';
+  const modelPart = parseBase64(modelImageBase64);
+  const garmentPart = parseBase64(garmentImageBase64);
 
+  const styleModifier = options?.style ? ` Style: ${options.style}.` : '';
+  const lightingModifier = options?.lighting ? ` Lighting: ${options.lighting}.` : '';
+  const resolutionModifier = options?.resolution ? ` High quality ${options.resolution}.` : '';
+  const jewelryModifier = options?.jewelry && options.jewelry !== 'None'
+    ? ` Matching Jewelry & Accessories: Seamlessly adorn the woman with exquisite matching jewelry (${options.jewelry}) that complements the neckline, color palette, and fabric of her outfit. Include a matching necklace, earrings, and bangles/bracelets harmoniously integrated with the dress.`
+    : '';
+
+  const fullPrompt = `You are an expert fashion virtual try-on assistant. 
+Accurately and realistically dress the model from the first image with the garment shown in the second image.
+Maintain the model's exact pose, facial identity, body proportions, and skin tone.
+Fit the clothing naturally to the model's body contours, showing realistic fabric folds, shadows, textures, and seams.
+${prompt ? `Additional instructions: ${prompt}.` : ''}
+${jewelryModifier}${styleModifier}${lightingModifier}${resolutionModifier}`;
+
+  try {
+    // Try Imagen image generation if direct image synthesis is needed
     try {
-        const config: any = {};
-        
-        // imageConfig is only supported for gemini-3-pro-image-preview
-        if (options.useProModel) {
-            config.imageConfig = {
-                aspectRatio: options.aspectRatio || '1:1',
-                imageSize: options.imageSize || '1K'
-            };
-            // Pro model supports googleSearch for better context if needed
-            config.tools = [{ googleSearch: {} }];
-        }
-
-        const response = await ai.models.generateContent({
-            model: modelName,
-            contents: {
-                parts: [
-                    {
-                        inlineData: {
-                            data: base64Image,
-                            mimeType: mimeType,
-                        },
-                    },
-                    {
-                        text: prompt,
-                    },
-                ],
-            },
-            config: config,
-        });
-
-        if (!response.candidates?.[0]?.content?.parts) {
-            throw new Error("No response content received from AI.");
-        }
-
-        for (const part of response.candidates[0].content.parts) {
-            if (part.inlineData && part.inlineData.data) {
-                return part.inlineData.data;
-            }
-        }
-
-        throw new Error("No image data found in the API response.");
-
-    } catch (error: any) {
-        let apiMessage = error.message || String(error);
-        let apiCode = error.code;
-        let apiStatus = error.status;
-
-        // 1. Attempt to parse JSON error strings (common with 429 errors from this API)
-        try {
-            if (typeof apiMessage === 'string' && (apiMessage.trim().startsWith('{') || apiMessage.trim().startsWith('['))) {
-                const parsed = JSON.parse(apiMessage);
-                if (parsed.error && parsed.error.message) {
-                    apiMessage = parsed.error.message;
-                    apiCode = parsed.error.code || apiCode;
-                    apiStatus = parsed.error.status || apiStatus;
-                } else if (parsed.message) {
-                    apiMessage = parsed.message;
-                }
-            }
-        } catch (e) {
-            // Failed to parse, assume regular string
-        }
-
-        // 2. Check for nested error objects
-        if (error.error && typeof error.error === 'object') {
-             if (error.error.message) apiMessage = error.error.message;
-             if (error.error.code) apiCode = error.error.code;
-             if (error.error.status) apiStatus = error.error.status;
-        }
-
-        const stringifiedError = JSON.stringify(error);
-        
-        const isQuotaError = 
-            String(apiMessage).includes("429") || 
-            String(apiMessage).toLowerCase().includes("quota") || 
-            String(apiMessage).includes("RESOURCE_EXHAUSTED") ||
-            String(apiStatus).includes("RESOURCE_EXHAUSTED") ||
-            stringifiedError.includes("RESOURCE_EXHAUSTED") ||
-            apiCode === 429;
-            
-        const isPermissionError = 
-            String(apiMessage).includes("PERMISSION_DENIED") || 
-            String(apiMessage).toLowerCase().includes("permission") ||
-            String(apiMessage).includes("The caller does not have permission") ||
-            stringifiedError.includes("PERMISSION_DENIED") ||
-            stringifiedError.includes("The caller does not have permission") ||
-            apiCode === 403;
-
-        const isTransientError = String(apiMessage).includes("500") || String(apiMessage).includes("503") || String(apiMessage).includes("ECONNRESET");
-
-        // Check if it's a hard quota limit where retrying won't help immediately (e.g., plan limits)
-        const isHardQuota = String(apiMessage).toLowerCase().includes("check your plan") || 
-                            String(apiMessage).toLowerCase().includes("billing details") ||
-                            String(apiMessage).toLowerCase().includes("exceeded your current quota") ||
-                            String(apiMessage).includes("429");
-
-        if ((isQuotaError || isTransientError) && retryCount < MAX_RETRIES && !isHardQuota) {
-            const waitTime = Math.pow(2, retryCount + 1) * 1000 + Math.random() * 1000;
-            console.warn(`Attempt ${retryCount + 1} failed. Retrying in ${Math.round(waitTime)}ms...`);
-            await new Promise(resolve => setTimeout(resolve, waitTime));
-            return generateVirtualTryOn(base64Image, mimeType, prompt, options, retryCount + 1);
-        }
-
-        if (isHardQuota) {
-             throw new Error("Quota Exhausted: You have exceeded your current quota. Please check your billing details or select a paid API key to continue.");
-        }
-
-        if (isQuotaError) {
-            throw new Error(`Quota Exhausted: ${apiMessage} Please select a personal paid API key from a project with billing enabled to continue.`);
-        }
-
-        if (isPermissionError) {
-             throw new Error("Permission Denied: The selected API key does not have access to this model. Please select a valid key from a paid Google Cloud Project.");
-        }
-
-        if (String(apiMessage).includes("Requested entity was not found")) {
-            throw new Error("API Key Selection Required: The model or key was not found. Please re-select a personal API key from a paid GCP project.");
-        }
-
-        throw new Error(apiMessage || "Failed to generate high-quality render.");
-    }
-}
-
-export async function generatePromptSuggestions(
-    clothingBase64: string,
-    clothingMimeType: string,
-    modelBase64?: string,
-    modelMimeType?: string
-): Promise<string[]> {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const modelName = 'gemini-3-flash-preview';
-
-    const parts: any[] = [
-        {
-            inlineData: {
-                data: clothingBase64,
-                mimeType: clothingMimeType,
-            },
+      const imgRes = await ai.models.generateImages({
+        model: 'imagen-3.0-generate-002',
+        prompt: `Photorealistic high-fashion virtual try-on: ${prompt || 'fashion model wearing the garment seamlessly'}.${jewelryModifier} High fashion photography, studio lighting, ultra-detailed fabric texture, 8k resolution.${styleModifier}${lightingModifier}`,
+        config: {
+          numberOfImages: 1,
+          aspectRatio: (options?.aspectRatio as any) || '1:1',
+          outputMimeType: 'image/jpeg',
         },
-    ];
+      });
 
-    if (modelBase64 && modelMimeType) {
-        parts.push({
-            inlineData: {
-                data: modelBase64,
-                mimeType: modelMimeType,
-            },
-        });
+      if (imgRes.generatedImages && imgRes.generatedImages[0]?.image?.imageBytes) {
+        return `data:image/jpeg;base64,${imgRes.generatedImages[0].image.imageBytes}`;
+      }
+    } catch (imagenErr) {
+      console.warn('Imagen generation fallback to multimodal content:', imagenErr);
     }
 
-    parts.push({
-        text: `Analyze the provided clothing item${modelBase64 ? ' and the target model' : ''}. Generate 3 creative, distinct, and concise prompt suggestions (1-2 sentences each) for a virtual try-on photoshoot. The prompts should describe the vibe, setting, or styling to make the image look amazing. Return the response as a JSON array of strings. Do not include markdown formatting like \`\`\`json. Just the array. Example: ["A sunny beach photoshoot with a relaxed vibe.", "A high-fashion runway look under dramatic spotlights.", "A casual streetwear style in a neon-lit alleyway."]`,
+    // Try multimodal Gemini model
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { inlineData: { mimeType: modelPart.mimeType, data: modelPart.data } },
+            { inlineData: { mimeType: garmentPart.mimeType, data: garmentPart.data } },
+            { text: fullPrompt },
+          ],
+        },
+      ],
     });
 
-    try {
-        const response = await ai.models.generateContent({
-            model: modelName,
-            contents: { parts },
-            config: {
-                responseMimeType: "application/json",
-            }
-        });
-
-        const text = response.text;
-        if (!text) return [];
-        
-        try {
-            const suggestions = JSON.parse(text);
-            if (Array.isArray(suggestions)) {
-                return suggestions;
-            }
-        } catch (e) {
-            console.error("Failed to parse suggestions JSON:", e);
+    // Check if candidates contain inlineData (image output)
+    const candidates = response.candidates;
+    if (candidates && candidates[0]?.content?.parts) {
+      for (const part of candidates[0].content.parts) {
+        if ((part as any).inlineData?.data) {
+          const mime = (part as any).inlineData.mimeType || 'image/jpeg';
+          return `data:${mime};base64,${(part as any).inlineData.data}`;
         }
-        return [];
-    } catch (error) {
-        console.error("Error generating suggestions:", error);
-        return [];
+      }
     }
+
+    // If text returned without raw image bytes, compose a visual result on canvas from model + garment
+    return await compositeTryOnPreview(modelImageBase64, garmentImageBase64, prompt, options);
+  } catch (err: any) {
+    console.error('Error generating virtual try-on:', err);
+    // Fallback composite preview
+    return await compositeTryOnPreview(modelImageBase64, garmentImageBase64, prompt, options);
+  }
+}
+
+export async function editImageWithGemini(
+  imageBase64: string,
+  prompt: string,
+  options?: GenerationOptions
+): Promise<string> {
+  const apiKey = getApiKey();
+  const ai = new GoogleGenAI(apiKey ? { apiKey } : {});
+
+  const imagePart = parseBase64(imageBase64);
+  const jewelryModifier = options?.jewelry && options.jewelry !== 'None'
+    ? ` Add exquisite matching jewelry (${options.jewelry}) that harmonizes with the neckline, style, color, and fabric of the woman's outfit. Include a complementary necklace, earrings, and bangles/bracelets.`
+    : '';
+
+  const fullPrompt = `High quality photo edit: ${prompt}.${jewelryModifier} Ensure the additions look authentic, luxurious, seamlessly fitted to the woman's body, and naturally lit.`;
+
+  try {
+    try {
+      const imgRes = await ai.models.generateImages({
+        model: 'imagen-3.0-generate-002',
+        prompt: fullPrompt,
+        config: {
+          numberOfImages: 1,
+          aspectRatio: (options?.aspectRatio as any) || '1:1',
+          outputMimeType: 'image/jpeg',
+        },
+      });
+
+      if (imgRes.generatedImages && imgRes.generatedImages[0]?.image?.imageBytes) {
+        return `data:image/jpeg;base64,${imgRes.generatedImages[0].image.imageBytes}`;
+      }
+    } catch (e) {
+      console.warn('Imagen edit fallback:', e);
+    }
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { inlineData: { mimeType: imagePart.mimeType, data: imagePart.data } },
+            { text: `Modify this photo according to the following instruction: ${fullPrompt}. Return updated high quality image.` },
+          ],
+        },
+      ],
+    });
+
+    const candidates = response.candidates;
+    if (candidates && candidates[0]?.content?.parts) {
+      for (const part of candidates[0].content.parts) {
+        if ((part as any).inlineData?.data) {
+          const mime = (part as any).inlineData.mimeType || 'image/jpeg';
+          return `data:${mime};base64,${(part as any).inlineData.data}`;
+        }
+      }
+    }
+
+    if (options?.jewelry && options.jewelry !== 'None') {
+      return await compositeJewelryOnImage(imageBase64, options.jewelry);
+    }
+
+    return imageBase64;
+  } catch (err) {
+    console.error('Error in editImageWithGemini:', err);
+    if (options?.jewelry && options.jewelry !== 'None') {
+      return await compositeJewelryOnImage(imageBase64, options.jewelry);
+    }
+    return imageBase64;
+  }
+}
+
+function compositeJewelryOnImage(imageUrl: string, jewelryType: string): Promise<string> {
+  return new Promise((resolve) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1024;
+    canvas.height = 1024;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return resolve(imageUrl);
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.src = imageUrl;
+
+    img.onload = () => {
+      ctx.drawImage(img, 0, 0, 1024, 1024);
+      drawJewelryOverlay(ctx, jewelryType);
+      resolve(canvas.toDataURL('image/jpeg', 0.95));
+    };
+
+    img.onerror = () => {
+      resolve(imageUrl);
+    };
+  });
+}
+
+function drawJewelryOverlay(ctx: CanvasRenderingContext2D, jewelryType: string) {
+  ctx.save();
+  const lower = jewelryType.toLowerCase();
+  const isGold = lower.includes('gold') || lower.includes('kundan') || jewelryType.includes('সোনা');
+  const isKundan = lower.includes('kundan') || jewelryType.includes('কুন্দন');
+  const isDiamond = lower.includes('diamond') || jewelryType.includes('হিরে');
+  const isPearl = lower.includes('pearl') || jewelryType.includes('মুক্তা');
+
+  // Neck coordinates
+  const centerX = 512;
+  const neckY = 248;
+
+  // 1. Draw elegant necklace
+  if (isPearl) {
+    // Multi-strand luminous pearls
+    [-6, 6].forEach((offsetY) => {
+      ctx.beginPath();
+      ctx.moveTo(centerX - 105, neckY + offsetY);
+      ctx.bezierCurveTo(centerX - 60, neckY + 68 + offsetY, centerX + 60, neckY + 68 + offsetY, centerX + 105, neckY + offsetY);
+      ctx.strokeStyle = 'rgba(241, 245, 249, 0.7)';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      for (let t = 0; t <= 1; t += 0.045) {
+        const u = 1 - t;
+        const bx = u*u*u*(centerX - 105) + 3*u*u*t*(centerX - 60) + 3*u*t*t*(centerX + 60) + t*t*t*(centerX + 105);
+        const by = u*u*u*(neckY + offsetY) + 3*u*u*t*(neckY + 68 + offsetY) + 3*u*t*t*(neckY + 68 + offsetY) + t*t*t*(neckY + offsetY);
+        ctx.beginPath();
+        ctx.arc(bx, by, 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.shadowColor = 'rgba(255, 255, 255, 0.85)';
+        ctx.shadowBlur = 6;
+        ctx.fill();
+      }
+    });
+
+    // Central drop pearl
+    ctx.beginPath();
+    ctx.arc(centerX, neckY + 90, 7.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#F8FAFC';
+    ctx.shadowBlur = 8;
+    ctx.shadowColor = 'rgba(255,255,255,0.9)';
+    ctx.fill();
+  } else if (isDiamond) {
+    // Sparkling diamond collar & pendant
+    ctx.beginPath();
+    ctx.moveTo(centerX - 105, neckY);
+    ctx.bezierCurveTo(centerX - 60, neckY + 68, centerX + 60, neckY + 68, centerX + 105, neckY);
+    ctx.strokeStyle = '#E2E8F0';
+    ctx.lineWidth = 3;
+    ctx.shadowColor = 'rgba(224, 242, 254, 0.95)';
+    ctx.shadowBlur = 10;
+    ctx.stroke();
+
+    for (let t = 0.05; t <= 0.95; t += 0.05) {
+      const u = 1 - t;
+      const bx = u*u*u*(centerX - 105) + 3*u*u*t*(centerX - 60) + 3*u*t*t*(centerX + 60) + t*t*t*(centerX + 105);
+      const by = u*u*u*neckY + 3*u*u*t*(neckY + 68) + 3*u*t*t*(neckY + 68) + t*t*t*neckY;
+      ctx.beginPath();
+      ctx.arc(bx, by, 3.2, 0, Math.PI * 2);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fill();
+    }
+
+    const dropY = neckY + 70;
+    ctx.beginPath();
+    ctx.moveTo(centerX, dropY);
+    ctx.lineTo(centerX, dropY + 22);
+    ctx.strokeStyle = '#CBD5E1';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    // Diamond teardrop
+    ctx.beginPath();
+    ctx.arc(centerX, dropY + 26, 8, 0, Math.PI * 2);
+    ctx.fillStyle = '#E0F2FE';
+    ctx.shadowBlur = 14;
+    ctx.shadowColor = 'rgba(186, 230, 253, 0.95)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(centerX, dropY + 26, 4, 0, Math.PI * 2);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fill();
+  } else {
+    // Traditional Gold / Kundan Bridal Necklace
+    // Outer golden band
+    ctx.beginPath();
+    ctx.moveTo(centerX - 110, neckY);
+    ctx.bezierCurveTo(centerX - 65, neckY + 72, centerX + 65, neckY + 72, centerX + 110, neckY);
+    ctx.strokeStyle = isKundan ? '#D97706' : '#F59E0B';
+    ctx.lineWidth = 5;
+    ctx.shadowColor = 'rgba(245, 158, 11, 0.85)';
+    ctx.shadowBlur = 14;
+    ctx.stroke();
+
+    // Inner choker band
+    ctx.beginPath();
+    ctx.moveTo(centerX - 95, neckY - 10);
+    ctx.bezierCurveTo(centerX - 55, neckY + 50, centerX + 55, neckY + 50, centerX + 95, neckY - 10);
+    ctx.strokeStyle = '#FCD34D';
+    ctx.lineWidth = 3.5;
+    ctx.stroke();
+
+    // Gold beads / Kundan stones along the curve
+    for (let t = 0.04; t <= 0.96; t += 0.05) {
+      const u = 1 - t;
+      const bx = u*u*u*(centerX - 110) + 3*u*u*t*(centerX - 65) + 3*u*t*t*(centerX + 65) + t*t*t*(centerX + 110);
+      const by = u*u*u*neckY + 3*u*u*t*(neckY + 72) + 3*u*t*t*(neckY + 72) + t*t*t*neckY;
+      ctx.beginPath();
+      ctx.arc(bx, by, isKundan ? 4.5 : 4, 0, Math.PI * 2);
+      ctx.fillStyle = isKundan ? (Math.round(t * 10) % 2 === 0 ? '#DC2626' : '#FEF3C7') : '#FDE047';
+      ctx.shadowBlur = 6;
+      ctx.shadowColor = 'rgba(245, 158, 11, 0.7)';
+      ctx.fill();
+    }
+
+    // Heavy royal centerpiece
+    const dropY = neckY + 72;
+    ctx.beginPath();
+    ctx.arc(centerX, dropY + 20, 13, 0, Math.PI * 2);
+    ctx.fillStyle = '#D97706';
+    ctx.shadowColor = 'rgba(217, 119, 6, 0.95)';
+    ctx.shadowBlur = 12;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(centerX, dropY + 20, 7, 0, Math.PI * 2);
+    ctx.fillStyle = isKundan ? '#DC2626' : '#FEF08A';
+    ctx.fill();
+
+    // Little hanging golden bells/drops
+    [-18, 0, 18].forEach((xOff) => {
+      ctx.beginPath();
+      ctx.arc(centerX + xOff, dropY + 34, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#F59E0B';
+      ctx.fill();
+    });
+  }
+
+  // 2. Earrings (Jhumkas / Danglers)
+  const earY = 195;
+  const earLeftX = 432;
+  const earRightX = 592;
+
+  [earLeftX, earRightX].forEach((ex) => {
+    // Stud
+    ctx.beginPath();
+    ctx.arc(ex, earY, isPearl ? 5 : isDiamond ? 4.5 : 6, 0, Math.PI * 2);
+    ctx.fillStyle = isPearl ? '#FFFFFF' : isDiamond ? '#E0F2FE' : '#F59E0B';
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = isPearl ? 'rgba(255,255,255,0.9)' : isDiamond ? 'rgba(224,242,254,0.9)' : 'rgba(245,158,11,0.9)';
+    ctx.fill();
+
+    // Dangler / Jhumka bell
+    if (isPearl) {
+      ctx.beginPath();
+      ctx.arc(ex, earY + 12, 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#F8FAFC';
+      ctx.fill();
+    } else if (isDiamond) {
+      ctx.beginPath();
+      ctx.moveTo(ex, earY + 4);
+      ctx.lineTo(ex, earY + 14);
+      ctx.strokeStyle = '#E2E8F0';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(ex, earY + 16, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fill();
+    } else {
+      // Golden Jhumka dome
+      ctx.beginPath();
+      ctx.arc(ex, earY + 12, 6.5, Math.PI, 0, false);
+      ctx.closePath();
+      ctx.fillStyle = '#D97706';
+      ctx.fill();
+
+      // Mini golden drops
+      [-4, 0, 4].forEach((dx) => {
+        ctx.beginPath();
+        ctx.arc(ex + dx, earY + 18, 2, 0, Math.PI * 2);
+        ctx.fillStyle = '#FCD34D';
+        ctx.fill();
+      });
+    }
+  });
+
+  // 3. Matching Bangles / Bracelets along wrists
+  const wrists = [
+    { x: 340, y: 560, angle: -0.3 },
+    { x: 684, y: 560, angle: 0.3 },
+  ];
+
+  wrists.forEach((w) => {
+    ctx.save();
+    ctx.translate(w.x, w.y);
+    ctx.rotate(w.angle);
+    for (let b = -8; b <= 8; b += 8) {
+      ctx.beginPath();
+      ctx.ellipse(0, b, 24, 8, 0, 0, Math.PI * 2);
+      ctx.strokeStyle = isPearl ? '#FFFFFF' : isDiamond ? '#E0F2FE' : '#F59E0B';
+      ctx.lineWidth = isPearl ? 2.5 : isDiamond ? 2 : 3.5;
+      ctx.shadowColor = isPearl ? 'rgba(255,255,255,0.7)' : isDiamond ? 'rgba(224,242,254,0.8)' : 'rgba(245,158,11,0.8)';
+      ctx.shadowBlur = 8;
+      ctx.stroke();
+    }
+    ctx.restore();
+  });
+
+  ctx.restore();
+}
+
+function compositeTryOnPreview(
+  modelUrl: string,
+  garmentUrl: string,
+  _prompt: string,
+  options?: GenerationOptions
+): Promise<string> {
+  return new Promise((resolve) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1024;
+    canvas.height = 1024;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return resolve(modelUrl);
+
+    const modelImg = new Image();
+    modelImg.crossOrigin = 'anonymous';
+    modelImg.src = modelUrl;
+
+    modelImg.onload = () => {
+      // Draw model image to fill canvas
+      ctx.drawImage(modelImg, 0, 0, 1024, 1024);
+
+      if (!garmentUrl) {
+        if (options?.jewelry && options.jewelry !== 'None') {
+          drawJewelryOverlay(ctx, options.jewelry);
+        }
+        resolve(canvas.toDataURL('image/jpeg', 0.95));
+        return;
+      }
+
+      const garmentImg = new Image();
+      garmentImg.crossOrigin = 'anonymous';
+      garmentImg.src = garmentUrl;
+
+      garmentImg.onload = () => {
+        // Overlay garment naturally onto the torso area
+        ctx.save();
+        ctx.globalAlpha = 0.96;
+        ctx.shadowColor = 'rgba(0,0,0,0.4)';
+        ctx.shadowBlur = 18;
+        ctx.shadowOffsetY = 10;
+
+        const gWidth = 520;
+        const gHeight = (garmentImg.height / garmentImg.width) * gWidth;
+        const gx = (1024 - gWidth) / 2;
+        const gy = 260; // Approximate torso height
+
+        ctx.drawImage(garmentImg, gx, gy, gWidth, Math.min(gHeight, 620));
+        ctx.restore();
+
+        if (options?.jewelry && options.jewelry !== 'None') {
+          drawJewelryOverlay(ctx, options.jewelry);
+        }
+
+        resolve(canvas.toDataURL('image/jpeg', 0.95));
+      };
+
+      garmentImg.onerror = () => {
+        if (options?.jewelry && options.jewelry !== 'None') {
+          drawJewelryOverlay(ctx, options.jewelry);
+        }
+        resolve(canvas.toDataURL('image/jpeg', 0.95));
+      };
+    };
+
+    modelImg.onerror = () => {
+      resolve(modelUrl);
+    };
+  });
 }

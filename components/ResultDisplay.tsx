@@ -1,4 +1,6 @@
+import React from 'react';
 
-// This component is simple and integrated directly into App.tsx for better state management.
-// This file can be removed, but is kept for structural clarity.
-export {};
+export const ResultDisplay: React.FC<{ imageUrl?: string | null }> = ({ imageUrl }) => {
+  if (!imageUrl) return null;
+  return <img src={imageUrl} alt="Result" className="w-full h-full object-contain" />;
+};
